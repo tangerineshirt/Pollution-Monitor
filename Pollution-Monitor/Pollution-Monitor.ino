@@ -1,5 +1,3 @@
-// #include <tflm_esp32.h>
-// #include <eloquent_tinyml.h>
 #include <Arduino.h>
 #include <GP2YDustSensor.h>
 #include <freertos/FreeRTOS.h>
@@ -8,30 +6,35 @@
 #include <DHT.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-// #include "airQuality.h"
+#include <ArduinoJson.h>
+#include "SVMClassifier.h"
 
 #define NO2 25  // Pin analog input ESP32
-#define DHTPIN 19
+#define DHTPIN 21
 #define DHTTYPE DHT22
-
-const char *ssid = "BuzzNet 5Ghz";
-const char *password = "BuzzNet6988";
-
-const char *serverName = "http://52.200.111.58/api/sensor";
-
-// WiFiClientSecure client;
+#define DHTPIN2 22
+#define DHTPIN3 23
+#define ENA 27
+#define IN1 14
+#define IN2 13
 
 SemaphoreHandle_t xSemaphore;
 DHT dht(DHTPIN, DHTTYPE);
+DHT dht2(DHTPIN2, DHTTYPE);
+DHT dht3(DHTPIN3, DHTTYPE);
 
-const uint8_t SHARP_LED_PIN = 14;  // Sharp Dust/particle sensor Led Pin
-const uint8_t SHARP_VO_PIN = A0;   // Sharp Dust/particle analog out pin used for reading
+const char *ssid = "BuzzNet 2.4Ghz_EXT";
+const char *password = "BuzzNet6988";
+const char *serverUrl = "http://52.200.111.58/api/sensor";
 
-// Eloquent::TF::Sequential<TF_NUM_OPS, 2000> tf;
+const uint8_t SHARP_LED_PIN = 5;  // Sharp Dust/particle sensor Led Pin
+const uint8_t SHARP_VO_PIN = 34;  // Sharp Dust/particle analog out pin used for reading
+
+Eloquent::ML::Port::SVM clf;
 GP2YDustSensor dustSensor(GP2YDustSensorType::GP2Y1010AU0F, SHARP_LED_PIN, SHARP_VO_PIN);
 
 void TaskSensor(void *pvParameters);
-// void TaskPredict(void *pvParameters);
+void TaskPredict(void *pvParameters);
 void TaskSendData(void *pvParameters);
 void TaskPrint(void *pvParameters);
 
@@ -39,6 +42,8 @@ float humidity = 0, temp = 0, pm25 = 0, co = 0, no2 = 0;
 int currentTask = 0;
 
 const int mq7Pin = 35;    // Gunakan pin ADC1 (GPIO 32-39) untuk pembacaan
+const int mq7pin2 = 18;
+const int mq7pin3 = 19;
 const float RLmq = 10.0;  // Nilai resistor beban (load resistor) dalam kilo ohm
 float Ro = 10.0;          // Ro harus dikalibrasi di udara bersih (estimasi awal)
 int mqValue = 0;
@@ -50,163 +55,213 @@ const float RLno = 47000.0;  // Resistor beban 47kΩ
 
 float no2concentration = 0;
 
+String kelas;
 int noadc = 0;
-float noVoltage = 0, rs = 0, ppb = 0, log_rs = 0, log_ppb = 0;
-const float no_m = -0.7, no_b = 3.3;
+float noVoltage = 0;
 
 float dense = 0;
 float running = 0;
+
+//DC FAN
+const int pwmFreq = 5000;
+const int pwmResolution = 8;  // 8-bit (0 - 255)
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
-  // WiFi.begin(ssid, password);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  ledcAttach(ENA, pwmFreq, pwmResolution);
 
   dht.begin();
+  dht2.begin();
+  dht3.begin();
   dustSensor.begin();
-  // tf.begin(airQualityModel);
   if (xSemaphore == NULL) {
     xSemaphore = xSemaphoreCreateMutex();
-    xSemaphoreGive((xSemaphore));
-    xTaskCreate(TaskSensor, "Sensor", 8192, NULL, 3, NULL);
-    // xTaskCreate(TaskPredict, "Predict", 4096, NULL, 2, NULL);
-    xTaskCreate(TaskSendData, "SendData", 2048, NULL, 2, NULL);
-    xTaskCreate(TaskPrint, "Print", 2048, NULL, 1, NULL);
+    if (xSemaphore != NULL) {
+      if (xTaskCreate(TaskSensor, "Sensor", 4096, NULL, 4, NULL) != pdPASS)
+        Serial.println("Failed to create Sensor task");
+      if (xTaskCreate(TaskPredict, "Predict", 8192, NULL, 3, NULL) != pdPASS)
+        Serial.println("Failed to create Predict task");
+      if (xTaskCreatePinnedToCore(TaskSendData, "SendData", 16384, NULL, 2, NULL, 0) != pdPASS)
+        Serial.println("Failed to create SendData task");
+      if (xTaskCreate(TaskPrint, "Print", 1024, NULL, 1, NULL) != pdPASS)
+        Serial.println("Failed to create Print task");
+    } else {
+      Serial.println("Failed to create semaphore.");
+    }
   }
-  // client.setInsecure();
 }
 
-void loop() {
-  // kosong
+void loop() {}
+
+float getMedian(float a, float b, float c) {
+  float arr[3] = {a, b, c};
+  // Bubble sort
+  for (int i = 0; i < 2; i++) {
+    for (int j = i + 1; j < 3; j++) {
+      if (arr[i] > arr[j]) {
+        float temp = arr[i];
+        arr[i] = arr[j];
+        arr[j] = temp;
+      }
+    }
+  }
+  return arr[1]; // Median ada di tengah
 }
 
 void TaskSensor(void *pvParameters) {
   for (;;) {
-    //INI DHT22
-    humidity = dht.readHumidity();
-    temp = dht.readTemperature();
+    int temp1 = 0;
+    int temp2 = 0;
+    int temp3 = 0;
 
-    //INI MQ-7
-    mqValue = analogRead(mq7Pin);                 // 0 - 4095 (12-bit ADC)
-    mqVoltage = mqValue * (3.3 / 4095.0);         // Tegangan aktual (ESP32 3.3V)
-    Rs = ((3.3 - mqVoltage) / mqVoltage) * RLmq;  // Rumus resistansi sensor saat ini
-    ratio = Rs / Ro;
+    int hum1 = 0;
+    int hum2 = 0;
+    int hum3 = 0;
 
-    // Kurva dari datasheet MQ7 (CO): log(PPM) = (log(Rs/Ro) - b) / m
-    ppm_log = (log10(ratio) - mq_b) / mq_m;
-    ppm = pow(10, ppm_log);  // Konversi log PPM ke nilai PPM asli
+    int mq1 = 0;
+    int mq2 = 0;
+    int mq3 = 0;
+    if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
+      //INI DHT22
+      humidity = dht.readHumidity();
+      temp = dht.readTemperature();
 
-    //INI NO2
-    noadc = analogRead(NO2);
-    noVoltage = noadc * (3.3 / 4096);
-    no2concentration = noVoltage * 2.0;
+      //INI MQ-7
+      mqValue = analogRead(mq7Pin);                 // 0 - 4095 (12-bit ADC)
+      mqVoltage = mqValue * (3.3 / 4095.0);         // Tegangan aktual (ESP32 3.3V)
+      Rs = ((3.3 - mqVoltage) / mqVoltage) * RLmq;  // Rumus resistansi sensor saat ini
+      ratio = Rs / Ro;
 
-    //INI PM2.5
-    dense = dustSensor.getDustDensity();
-    running = dustSensor.getRunningAverage();
+      // Kurva dari datasheet MQ7 (CO): log(PPM) = (log(Rs/Ro) - b) / m
+      ppm_log = (log10(ratio) - mq_b) / mq_m;
+      ppm = pow(10, ppm_log);  // Konversi log PPM ke nilai PPM asli
+
+      //INI NO2
+      noadc = analogRead(NO2);
+      noVoltage = noadc * (3.3 / 4096);
+      no2concentration = noVoltage * 2.0;
+
+      //INI PM2.5
+      dense = dustSensor.getDustDensity();
+      running = dustSensor.getRunningAverage();
+
+      xSemaphoreGive(xSemaphore);
+    }
     vTaskDelay(2000 / portTICK_PERIOD_MS);
+  }
+}
+
+void TaskPredict(void *pvParameters) {
+  for (;;) {
+    if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
+      pm25 = dense;
+      no2 = no2concentration;
+      co = ppm;
+
+      int speed = 0;
+
+      float input[5] = { temp, humidity, pm25, no2, co };
+
+      int predictedClass = clf.predict(input);
+
+      switch (predictedClass) {
+        case 0:
+          kelas = "Hazardous";
+          speed = 255;
+          break;
+        case 1:
+          kelas = "Poor";
+          speed = 255;
+          break;
+        case 2:
+          kelas = "Moderate";
+          speed = 200;
+          break;
+        case 3:
+          kelas = "Good";
+          speed = 0;
+          break;
+        default:
+          kelas = "Unknown";
+          speed = 0;
+          break;
+      }
+      digitalWrite(IN1, HIGH);
+      digitalWrite(IN2, LOW);
+
+      ledcWrite(ENA, speed);
+      xSemaphoreGive(xSemaphore);
+    }
+    vTaskDelay(2100 / portTICK_PERIOD_MS);
   }
 }
 
 void TaskSendData(void *pvParameters) {
   WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Connecting to WiFi...");
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    delay(500);
+    Serial.print(".");
   }
-  Serial.println("Connected to WiFi");
-
+  Serial.println("\nWiFi connected!");
   for (;;) {
-    if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient http;
+    if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
+      pm25 = dense;
+      no2 = no2concentration;
+      co = ppm;
 
-      // Siapkan data JSON
-      String postData = "{";
-      postData += "\"pm25\":" + String(dense, 2) + ",";
-      postData += "\"co\":" + String(ppm, 2) + ",";
-      postData += "\"no2\":" + String(no2concentration, 2) + ",";
-      postData += "\"temp\":" + String(temp, 2) + ",";
-      postData += "\"humidity\":" + String(humidity, 2) + ",";
-      postData += "\"air_quality\":\"Good\"";  // Jika punya perhitungan AQI, ganti ini
-      postData += "}";
+      StaticJsonDocument<256> doc;
+      doc["pm25"] = pm25;
+      doc["co"] = co;
+      doc["no2"] = no2;
+      doc["temp"] = temp;
+      doc["humidity"] = humidity;
+      doc["air_quality"] = kelas;
 
-      http.begin(serverName);
-      http.addHeader("Content-Type", "application/json");
+      String jsonStr;
+      serializeJson(doc, jsonStr);
 
-      int httpResponseCode = http.POST(postData);
+      if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin(serverUrl);
+        http.addHeader("Content-Type", "application/json");
+        int httpResponseCode = http.POST(jsonStr);
+        http.end();
 
-      if (httpResponseCode > 0) {
-        String response = http.getString();
-        Serial.print("HTTP Response code: ");
-        Serial.println(httpResponseCode);
-        Serial.print("Response: ");
-        Serial.println(response);
+        if (httpResponseCode > 0) {
+          Serial.println("Data sent to server.");
+        } else {
+          Serial.println("Send failed.");
+        }
       } else {
-        Serial.print("Error code: ");
-        Serial.println(httpResponseCode);
+        Serial.println("WiFi disconnected.");
       }
-
-      http.end();
-    } else {
-      Serial.println("WiFi Disconnected. Attempting reconnect...");
-      WiFi.begin(ssid, password);
+      xSemaphoreGive(xSemaphore);
     }
-
-    vTaskDelay(10000 / portTICK_PERIOD_MS);  // kirim tiap 10 detik
+    vTaskDelay(10000 / portTICK_PERIOD_MS);  // setiap 10 detik
   }
 }
 
-// void TaskPredict(void *pvParameters) {
-//   for (;;) {
-//     float input[5] = {temp, humidity, pm25, no2, co};
-//     float output[4];
-
-//     tf.predict(input, output);
-
-//     int predicted_class = 0;
-//     float max_score = output[0];
-//     for (int i = 1; i < 4; i++) {
-//       if (output[i] > max_score) {
-//         max_score = output[i];
-//         predicted_class = i;
-//       }
-//     }
-
-//     Serial.print("Predicted Class: ");
-//     switch (predicted_class) {
-//       case 0:
-//         Serial.println("Hazardous");
-//         break;
-//       case 1:
-//         Serial.println("Poor");
-//         break;
-//       case 2:
-//         Serial.println("Moderate");
-//         break;
-//       case 3:
-//         Serial.println("Good");
-//         break;
-//       default:
-//         Serial.println("Unknown");
-//         break;
-//     }
-
-//     vTaskDelay(2100 / portTICK_PERIOD_MS);
-//   }
-// }
-
 void TaskPrint(void *pvParameters) {
   for (;;) {
-    Serial.print("Suhu: ");
-    Serial.println(temp);
-    Serial.print("Kelembaban: ");
-    Serial.println(humidity);
-    Serial.print("CO: ");
-    Serial.println(ppm);
-    Serial.print("NO2: ");
-    Serial.println(no2concentration);
-    Serial.print("PM2.5: ");
-    Serial.print(dense);
-    Serial.println(" ug/m3");
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
+    if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
+      Serial.print("Suhu: ");
+      Serial.println(temp);
+      Serial.print("Kelembaban: ");
+      Serial.println(humidity);
+      Serial.print("CO: ");
+      Serial.println(ppm);
+      Serial.print("NO2: ");
+      Serial.println(no2concentration);
+      Serial.print("PM2.5: ");
+      Serial.print(dense);
+      Serial.println(" ug/m3");
+      Serial.print("Predicted Class: ");
+      Serial.println(kelas);
+      xSemaphoreGive(xSemaphore);
+    }
+    vTaskDelay(2500 / portTICK_PERIOD_MS);
   }
 }
