@@ -17,14 +17,18 @@
 #define ENA 27
 #define IN1 14
 #define IN2 13
+#define MERAH 16
+#define KUNING 17
+#define PUTIH 18
+#define HIJAU 19
 
 SemaphoreHandle_t xSemaphore;
 DHT dht(DHTPIN, DHTTYPE);
 DHT dht2(DHTPIN2, DHTTYPE);
 DHT dht3(DHTPIN3, DHTTYPE);
 
-const char *ssid = "BuzzNet 2.4Ghz_EXT";
-const char *password = "BuzzNet6988";
+const char *ssid = "OPPO A77s";
+const char *password = "password";
 const char *serverUrl = "http://52.200.111.58/api/sensor";
 
 const uint8_t SHARP_LED_PIN = 5;  // Sharp Dust/particle sensor Led Pin
@@ -41,25 +45,21 @@ void TaskPrint(void *pvParameters);
 float humidity = 0, temp = 0, pm25 = 0, co = 0, no2 = 0;
 int currentTask = 0;
 
-const int mq7Pin = 35;    // Gunakan pin ADC1 (GPIO 32-39) untuk pembacaan
-const int mq7pin2 = 18;
-const int mq7pin3 = 19;
+const int mq7Pin = 35;  // Gunakan pin ADC1 (GPIO 32-39) untuk pembacaan
+const int mq7pin2 = 36;
+const int mq7pin3 = 39;
 const float RLmq = 10.0;  // Nilai resistor beban (load resistor) dalam kilo ohm
 float Ro = 10.0;          // Ro harus dikalibrasi di udara bersih (estimasi awal)
 int mqValue = 0;
-float mqVoltage = 0, Rs = 0, ratio = 0, ppm_log = 0, ppm = 0;
+float mqVoltage = 0, Rs = 0, ratio = 0, ppm_log = 0;
 const float mq_b = 0.35, mq_m = -0.77;
 
 const float VREF = 3.3;      // Tegangan referensi ESP32
 const float RLno = 47000.0;  // Resistor beban 47kΩ
 
-float no2concentration = 0;
-
 String kelas;
 int noadc = 0;
 float noVoltage = 0;
-
-float dense = 0;
 float running = 0;
 
 //DC FAN
@@ -70,6 +70,10 @@ void setup() {
   Serial.begin(115200);
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
+  pinMode(MERAH, OUTPUT);
+  pinMode(KUNING, OUTPUT);
+  pinMode(PUTIH, OUTPUT);
+  pinMode(HIJAU, OUTPUT);
   ledcAttach(ENA, pwmFreq, pwmResolution);
 
   dht.begin();
@@ -79,7 +83,7 @@ void setup() {
   if (xSemaphore == NULL) {
     xSemaphore = xSemaphoreCreateMutex();
     if (xSemaphore != NULL) {
-      if (xTaskCreate(TaskSensor, "Sensor", 4096, NULL, 4, NULL) != pdPASS)
+      if (xTaskCreate(TaskSensor, "Sensor", 20000, NULL, 4, NULL) != pdPASS)
         Serial.println("Failed to create Sensor task");
       if (xTaskCreate(TaskPredict, "Predict", 8192, NULL, 3, NULL) != pdPASS)
         Serial.println("Failed to create Predict task");
@@ -96,7 +100,7 @@ void setup() {
 void loop() {}
 
 float getMedian(float a, float b, float c) {
-  float arr[3] = {a, b, c};
+  float arr[3] = { a, b, c };
   // Bubble sort
   for (int i = 0; i < 2; i++) {
     for (int j = i + 1; j < 3; j++) {
@@ -107,46 +111,65 @@ float getMedian(float a, float b, float c) {
       }
     }
   }
-  return arr[1]; // Median ada di tengah
+  return arr[2];  // Median ada di tengah
+}
+
+float calibrateCO(float x) {
+  float ppm;
+  mqVoltage = x * (3.3 / 4095.0);
+  Rs = ((3.3 - mqVoltage) / mqVoltage) * RLmq;
+  ratio = Rs / Ro;
+
+  // Kurva dari datasheet MQ7 (CO): log(PPM) = (log(Rs/Ro) - b) / m
+  ppm_log = (log10(ratio) - mq_b) / mq_m;
+  ppm = pow(10, ppm_log);
+  return ppm;
 }
 
 void TaskSensor(void *pvParameters) {
   for (;;) {
-    int temp1 = 0;
-    int temp2 = 0;
-    int temp3 = 0;
+    float temp1 = 0;
+    float temp2 = 0;
+    float temp3 = 0;
 
-    int hum1 = 0;
-    int hum2 = 0;
-    int hum3 = 0;
+    float hum1 = 0;
+    float hum2 = 0;
+    float hum3 = 0;
 
-    int mq1 = 0;
-    int mq2 = 0;
-    int mq3 = 0;
+    float mq1 = 0;
+    float mq2 = 0;
+    float mq3 = 0;
     if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
       //INI DHT22
-      humidity = dht.readHumidity();
-      temp = dht.readTemperature();
+      temp1 = dht.readTemperature();
+      temp2 = dht2.readTemperature();
+      temp3 = dht3.readTemperature();
+
+      hum1 = dht.readHumidity();
+      hum2 = dht2.readHumidity();
+      hum3 = dht3.readHumidity();
+
+      temp = getMedian(temp1, temp2, temp3);
+      humidity = getMedian(hum1, hum2, hum3);
 
       //INI MQ-7
-      mqValue = analogRead(mq7Pin);                 // 0 - 4095 (12-bit ADC)
-      mqVoltage = mqValue * (3.3 / 4095.0);         // Tegangan aktual (ESP32 3.3V)
-      Rs = ((3.3 - mqVoltage) / mqVoltage) * RLmq;  // Rumus resistansi sensor saat ini
-      ratio = Rs / Ro;
+      mq1 = calibrateCO(analogRead(mq7Pin));
+      mq2 = calibrateCO(analogRead(mq7pin2));
+      mq3 = calibrateCO(analogRead(mq7pin3));
 
-      // Kurva dari datasheet MQ7 (CO): log(PPM) = (log(Rs/Ro) - b) / m
-      ppm_log = (log10(ratio) - mq_b) / mq_m;
-      ppm = pow(10, ppm_log);  // Konversi log PPM ke nilai PPM asli
+      Serial.println(mq1);
+      Serial.println(mq2);
+      Serial.println(mq3);
+      co = getMedian(mq1, mq2, mq3);
 
       //INI NO2
       noadc = analogRead(NO2);
       noVoltage = noadc * (3.3 / 4096);
-      no2concentration = noVoltage * 2.0;
+      no2 = noVoltage * 2.0;
 
       //INI PM2.5
-      dense = dustSensor.getDustDensity();
+      pm25 = dustSensor.getDustDensity();
       running = dustSensor.getRunningAverage();
-
       xSemaphoreGive(xSemaphore);
     }
     vTaskDelay(2000 / portTICK_PERIOD_MS);
@@ -156,32 +179,35 @@ void TaskSensor(void *pvParameters) {
 void TaskPredict(void *pvParameters) {
   for (;;) {
     if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
-      pm25 = dense;
-      no2 = no2concentration;
-      co = ppm;
-
       int speed = 0;
 
       float input[5] = { temp, humidity, pm25, no2, co };
 
       int predictedClass = clf.predict(input);
-
+      digitalWrite(MERAH, LOW);
+      digitalWrite(KUNING, LOW);
+      digitalWrite(PUTIH, LOW);
+      digitalWrite(HIJAU, LOW);
       switch (predictedClass) {
         case 0:
           kelas = "Hazardous";
           speed = 255;
+          digitalWrite(MERAH, HIGH);
           break;
         case 1:
           kelas = "Poor";
           speed = 255;
+          digitalWrite(KUNING, HIGH);
           break;
         case 2:
           kelas = "Moderate";
           speed = 200;
+          digitalWrite(PUTIH, HIGH);
           break;
         case 3:
           kelas = "Good";
           speed = 0;
+          digitalWrite(HIJAU, HIGH);
           break;
         default:
           kelas = "Unknown";
@@ -192,6 +218,7 @@ void TaskPredict(void *pvParameters) {
       digitalWrite(IN2, LOW);
 
       ledcWrite(ENA, speed);
+
       xSemaphoreGive(xSemaphore);
     }
     vTaskDelay(2100 / portTICK_PERIOD_MS);
@@ -208,9 +235,6 @@ void TaskSendData(void *pvParameters) {
   Serial.println("\nWiFi connected!");
   for (;;) {
     if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
-      pm25 = dense;
-      no2 = no2concentration;
-      co = ppm;
 
       StaticJsonDocument<256> doc;
       doc["pm25"] = pm25;
@@ -252,11 +276,11 @@ void TaskPrint(void *pvParameters) {
       Serial.print("Kelembaban: ");
       Serial.println(humidity);
       Serial.print("CO: ");
-      Serial.println(ppm);
+      Serial.println(co);
       Serial.print("NO2: ");
-      Serial.println(no2concentration);
+      Serial.println(no2);
       Serial.print("PM2.5: ");
-      Serial.print(dense);
+      Serial.print(pm25);
       Serial.println(" ug/m3");
       Serial.print("Predicted Class: ");
       Serial.println(kelas);
