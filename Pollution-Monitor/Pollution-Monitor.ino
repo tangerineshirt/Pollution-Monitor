@@ -83,13 +83,13 @@ void setup() {
   if (xSemaphore == NULL) {
     xSemaphore = xSemaphoreCreateMutex();
     if (xSemaphore != NULL) {
-      if (xTaskCreate(TaskSensor, "Sensor", 20000, NULL, 4, NULL) != pdPASS)
+      if (xTaskCreate(TaskSensor, "Sensor", 16384, NULL, 4, NULL) != pdPASS)
         Serial.println("Failed to create Sensor task");
-      if (xTaskCreate(TaskPredict, "Predict", 8192, NULL, 3, NULL) != pdPASS)
+      if (xTaskCreate(TaskPredict, "Predict", 16384, NULL, 3, NULL) != pdPASS)
         Serial.println("Failed to create Predict task");
       if (xTaskCreatePinnedToCore(TaskSendData, "SendData", 16384, NULL, 2, NULL, 0) != pdPASS)
         Serial.println("Failed to create SendData task");
-      if (xTaskCreate(TaskPrint, "Print", 1024, NULL, 1, NULL) != pdPASS)
+      if (xTaskCreate(TaskPrint, "Print", 4096, NULL, 1, NULL) != pdPASS)
         Serial.println("Failed to create Print task");
     } else {
       Serial.println("Failed to create semaphore.");
@@ -99,7 +99,7 @@ void setup() {
 
 void loop() {}
 
-float getMedian(float a, float b, float c) {
+float getMax(float a, float b, float c) {
   float arr[3] = { a, b, c };
   // Bubble sort
   for (int i = 0; i < 2; i++) {
@@ -111,7 +111,7 @@ float getMedian(float a, float b, float c) {
       }
     }
   }
-  return arr[2];  // Median ada di tengah
+  return arr[2]; 
 }
 
 float calibrateCO(float x) {
@@ -149,8 +149,8 @@ void TaskSensor(void *pvParameters) {
       hum2 = dht2.readHumidity();
       hum3 = dht3.readHumidity();
 
-      temp = getMedian(temp1, temp2, temp3);
-      humidity = getMedian(hum1, hum2, hum3);
+      temp = getMax(temp1, temp2, temp3);
+      humidity = getMax(hum1, hum2, hum3);
 
       //INI MQ-7
       mq1 = calibrateCO(analogRead(mq7Pin));
@@ -160,7 +160,7 @@ void TaskSensor(void *pvParameters) {
       Serial.println(mq1);
       Serial.println(mq2);
       Serial.println(mq3);
-      co = getMedian(mq1, mq2, mq3);
+      co = getMax(mq1, mq2, mq3);
 
       //INI NO2
       noadc = analogRead(NO2);
