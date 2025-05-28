@@ -58,7 +58,7 @@ const float VREF = 3.3;      // Tegangan referensi ESP32
 const float RLno = 47000.0;  // Resistor beban 47kΩ
 
 String kelas;
-int noadc = 0;
+float noadc = 0;
 float noVoltage = 0;
 float running = 0;
 
@@ -99,7 +99,7 @@ void setup() {
 
 void loop() {}
 
-float getMax(float a, float b, float c) {
+float getMedian(float a, float b, float c) {
   float arr[3] = { a, b, c };
   // Bubble sort
   for (int i = 0; i < 2; i++) {
@@ -111,7 +111,7 @@ float getMax(float a, float b, float c) {
       }
     }
   }
-  return arr[2]; 
+  return arr[1]; 
 }
 
 float calibrateCO(float x) {
@@ -149,8 +149,8 @@ void TaskSensor(void *pvParameters) {
       hum2 = dht2.readHumidity();
       hum3 = dht3.readHumidity();
 
-      temp = getMax(temp1, temp2, temp3);
-      humidity = getMax(hum1, hum2, hum3);
+      temp = getMedian(temp1, temp2, temp3);
+      humidity = getMedian(hum1, hum2, hum3);
 
       //INI MQ-7
       mq1 = calibrateCO(analogRead(mq7Pin));
@@ -160,12 +160,14 @@ void TaskSensor(void *pvParameters) {
       Serial.println(mq1);
       Serial.println(mq2);
       Serial.println(mq3);
-      co = getMax(mq1, mq2, mq3);
+      co = getMedian(mq1, mq2, mq3);
 
       //INI NO2
       noadc = analogRead(NO2);
       noVoltage = noadc * (3.3 / 4096);
       no2 = noVoltage * 2.0;
+      Serial.print("ADC NO2: ");
+      Serial.println(noadc);
 
       //INI PM2.5
       pm25 = dustSensor.getDustDensity();
