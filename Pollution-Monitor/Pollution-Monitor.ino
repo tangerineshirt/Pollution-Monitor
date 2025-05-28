@@ -58,7 +58,7 @@ const float VREF = 3.3;      // Tegangan referensi ESP32
 const float RLno = 47000.0;  // Resistor beban 47kΩ
 
 String kelas;
-int noadc = 0;
+float noadc = 0;
 float noVoltage = 0;
 float running = 0;
 
@@ -83,13 +83,13 @@ void setup() {
   if (xSemaphore == NULL) {
     xSemaphore = xSemaphoreCreateMutex();
     if (xSemaphore != NULL) {
-      if (xTaskCreate(TaskSensor, "Sensor", 20000, NULL, 4, NULL) != pdPASS)
+      if (xTaskCreate(TaskSensor, "Sensor", 16384, NULL, 4, NULL) != pdPASS)
         Serial.println("Failed to create Sensor task");
-      if (xTaskCreate(TaskPredict, "Predict", 8192, NULL, 3, NULL) != pdPASS)
+      if (xTaskCreate(TaskPredict, "Predict", 16384, NULL, 3, NULL) != pdPASS)
         Serial.println("Failed to create Predict task");
       if (xTaskCreatePinnedToCore(TaskSendData, "SendData", 16384, NULL, 2, NULL, 0) != pdPASS)
         Serial.println("Failed to create SendData task");
-      if (xTaskCreate(TaskPrint, "Print", 1024, NULL, 1, NULL) != pdPASS)
+      if (xTaskCreate(TaskPrint, "Print", 4096, NULL, 1, NULL) != pdPASS)
         Serial.println("Failed to create Print task");
     } else {
       Serial.println("Failed to create semaphore.");
@@ -111,7 +111,7 @@ float getMedian(float a, float b, float c) {
       }
     }
   }
-  return arr[2];  // Median ada di tengah
+  return arr[1]; 
 }
 
 float calibrateCO(float x) {
@@ -166,6 +166,8 @@ void TaskSensor(void *pvParameters) {
       noadc = analogRead(NO2);
       noVoltage = noadc * (3.3 / 4096);
       no2 = noVoltage * 2.0;
+      Serial.print("ADC NO2: ");
+      Serial.println(noadc);
 
       //INI PM2.5
       pm25 = dustSensor.getDustDensity();
